@@ -3,7 +3,7 @@ import threading
 import time
 import scipy.io as sci
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
+
 
 # ------------------------ Dynamics and Control ------------------------
 
@@ -34,7 +34,7 @@ stopEvent = threading.Event()
 
 # ------------------------ Threaded Modules ------------------------
 
-def simulator_thread(A, B, Ts, x_traj, y_traj, z_traj,sim_t):
+def simulator_thread(A, B, M, g, Ts, x_traj, y_traj, z_traj, sim_t):
     """Simulates quadrotor plant dynamics using the control input."""
     global x0, control_u
     prev_control = np.zeros(4)
@@ -50,6 +50,7 @@ def simulator_thread(A, B, Ts, x_traj, y_traj, z_traj,sim_t):
                 # Use previous control input if error occurs
                 print(f"[SIMULATOR] Error reading control input: {e}")
                 cu = prev_control.copy()
+                cu[0]= M * g  # maintain hover if no control available
             # Simulate dynamics
             dx = A @ x0 + B @ cu
             # Update state
@@ -117,10 +118,11 @@ def ground_thread(waypoints, Ts, x_ground, y_ground, z_ground, gnd_t):
                 print(f"[GROUND] Error reading sensor state: {e}")
                 
             dist = np.linalg.norm(x[[1, 3, 5]] - waypoints[y, [1, 3, 5]])
-            # Update waypoint if close enough
-            if dist <= 2.0 and y < len(waypoints) - 1:
+           
+            if dist <= 0.05 and y < len(waypoints) - 1:
                 y += 1
                 print(f"[GROUND] Reached waypoint {y}/{len(waypoints)} at time {time.time() - start_time:.2f}s")
+                
             
             # Update target waypoint
             try:
@@ -138,7 +140,7 @@ def ground_thread(waypoints, Ts, x_ground, y_ground, z_ground, gnd_t):
         
         time.sleep(Ts)
 
-def controller_thread(K, Ts, force, phi, theta, psi, ctrl_time):
+def controller_thread(K, Ts, force, phi, theta, psi, ctrl_time, e_x, e_y, e_z, e_time):
     """Computes control input using LQR based on current state and target waypoint."""
     global noise_x0, control_u, x_sp
 
@@ -164,13 +166,17 @@ def controller_thread(K, Ts, force, phi, theta, psi, ctrl_time):
                 x_sp = prev_x_sp.copy()
             
             # LQR Control Law
-            cu = -K @ (x - x_sp)
-            
-            
+            e=x - x_sp
+            cu = -K @ (e)
+
             force.append(cu[0])
             phi.append(cu[1])
             theta.append(cu[2])
             psi.append(cu[3])
+            e_x.append(e[0])
+            e_y.append(e[1])
+            e_z.append(e[2])
+            e_time.append(time.time() - start_time)
             ctrl_time.append(time.time() - start_time)
             
             # Send control
@@ -192,9 +198,9 @@ if __name__ == "__main__":
     x_amp, y_amp, z0 = 5, 5, 2
     T = 20
     omega = 2 * np.pi / T
-    steps = 1000
+    steps = 100
     Ts = 0.001
-    sim_time = 85
+    sim_time = 100
     
     # Quadrotor Parameters
     M = 0.6  # mass (Kg)
@@ -242,18 +248,19 @@ if __name__ == "__main__":
     waypoints = generate_waypoints_figure_8(x_amp, y_amp, omega, z0, steps)
     print(f"[MAIN] Generated {len(waypoints)} waypoints for the figure-8 trajectory.")
     
-    K = load_matrix_K("../mat/control.mat")
+    K = load_matrix_K("../mat/K.mat")
     x_traj, y_traj, z_traj = [], [], []
     x_sens, y_sens, z_sens = [], [], []
     x_gnd, y_gnd, z_gnd = [], [], []
     sim_t, sens_t, ctrl_t, gnd_t = [], [], [], []
     force, phi, theta, psi, ctrl_time = [], [], [], [], []
+    e_x, e_y, e_z, e_time = [], [], [], []
     
     # Start threads
     threads = [
-        threading.Thread(target=simulator_thread, args=(A, B, 0.001, x_traj, y_traj, z_traj, sim_t), name="Simulator"),
+        threading.Thread(target=simulator_thread, args=(A, B, M, g, 0.001, x_traj, y_traj, z_traj, sim_t), name="Simulator"),
         threading.Thread(target=sensor_thread, args=(0.003, x_sens, y_sens, z_sens, sens_t,'noise'), name="Sensor"),
-        threading.Thread(target=controller_thread, args=(K, 0.001, force, phi, theta, psi, ctrl_time), name="Controller"),
+        threading.Thread(target=controller_thread, args=(K, 0.001, force, phi, theta, psi, ctrl_time, e_x, e_y, e_z, e_time), name="Controller"),
         threading.Thread(target=ground_thread, args=(waypoints, 0.001, x_gnd, y_gnd, z_gnd, gnd_t), name="Ground")
     ]
 
@@ -344,6 +351,20 @@ if __name__ == "__main__":
     plt.xlabel('Time (s)')
     plt.ylabel('Control Inputs')
     plt.title('Control Inputs vs Time')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+    
+# ------------------------ Errors over time ------------------------
+    plt.figure()
+    if len(e_time) > 0:
+        plt.plot(e_time, e_x, 'r-', label='Error X')
+        plt.plot(e_time, e_y, 'g--', label='Error Y')
+        plt.plot(e_time, e_z, 'b:', label='Error Z')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Error')
+    plt.title('Tracking Errors vs Time')
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
