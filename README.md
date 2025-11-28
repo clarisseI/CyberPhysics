@@ -28,7 +28,7 @@ project/
 
 Install dependencies:
 ```bash
-pip install numpy matplotlib control
+pip install numpy matplotlib 
 ```
 
 ## 🚀 Usage
